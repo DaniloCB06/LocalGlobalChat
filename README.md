@@ -42,7 +42,9 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 - `/g` — Switches you to the **Global** chat channel.
 - `/l` — Switches you to the **Local** chat channel (distance-based).
 - `/msg <player> <message...>` — Sends a **private message** to another player (fully **pink**).
-  - If your build does not support “rest of line”, use quotes: `/msg player2 "hello there"`
+  - Example: `/msg player2 oi tudo bem com voce ?`
+- `/clearchat` — Clears chat for all online players and broadcasts:
+  - (Optional alias: `/cc`, if supported in build)
 - `/chatdebug` — Toggles **chat debug mode** (shows chat mode + target count). *(Admin only)*
 - `/localradius <number>` — Sets the **Local chat radius** in blocks (saved/persistent). *(Admin only)*
 
@@ -55,6 +57,7 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 | `/g` | *(none)* | Everyone |
 | `/l` | *(none)* | Everyone |
 | `/msg` | *(none)* | Everyone |
+| `/clearchat` | `localglobalchat.admin.clearchat` | Admin |
 | `/chatdebug` | `hytale.command.chatdebug` | Admin |
 | `/localradius` | `hytale.command.localradius` | Admin |
 
