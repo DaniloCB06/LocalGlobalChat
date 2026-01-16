@@ -64,21 +64,16 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 The local radius is saved to a config file and persists after a restart.
 
-Default fallback path:
-```
-
-./plugins/LocalGlobalChat/localglobalchat.properties
+Default fallback path: ./plugins/LocalGlobalChat/localglobalchat.properties
 
 ```
 
-Stored key:
-```
-
-localRadius=80
+Content in file "localglobalchat.properties"
 
 ```
 
----
+Stored key: localRadius=50 //example
+``` 
 
 ## Notes
 
@@ -86,4 +81,4 @@ localRadius=80
   - Same world
   - Distance ≤ configured radius
 - The plugin automatically uses TinyMsg if installed.
-```
+
