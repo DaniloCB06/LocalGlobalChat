@@ -50,7 +50,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
 
     @Override
     protected void setup() {
-        // ✅ carrega o raio salvo antes de registrar comandos e antes do chat rodar
+        //  carrega o raio salvo antes de registrar comandos e antes do chat rodar
         loadLocalRadiusFromDisk();
 
         getCommandRegistry().registerCommand(new GCommand(this));
@@ -58,6 +58,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
         getCommandRegistry().registerCommand(new MsgCommand());
         getCommandRegistry().registerCommand(new ChatDebugCommand(this));
         getCommandRegistry().registerCommand(new LocalRadiusCommand(this));
+        getCommandRegistry().registerCommand(new ClearChatCommand());
 
         // Registro do chat via reflection
         registerEventListener(PlayerChatEvent.class, ev -> onChat((PlayerChatEvent) ev));
