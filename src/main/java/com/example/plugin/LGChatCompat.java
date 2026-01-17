@@ -128,6 +128,11 @@ public final class LGChatCompat {
     }
 
     public static boolean hasPermissionCompat(Object sender, String node) {
+        // Mantém o comportamento antigo (fallback true) para comandos/console
+        return hasPermissionCompat(sender, node, true);
+    }
+
+    public static boolean hasPermissionCompat(Object sender, String node, boolean fallbackIfUnknown) {
         if (sender == null) return false;
 
         String[] names = {"hasPermission", "hasPermissionNode", "hasPerm", "permission"};
@@ -139,9 +144,10 @@ public final class LGChatCompat {
             } catch (Throwable ignored) { }
         }
 
-        // Se não existe API de checagem nesse build, deixa o servidor decidir via permission node do comando
-        return true;
+        // AQUI é a correção: quem decide o fallback é o chamador
+        return fallbackIfUnknown;
     }
+
 
     // =========================================================
     // Resolver nome do remetente (CommandSender não tem getUsername)

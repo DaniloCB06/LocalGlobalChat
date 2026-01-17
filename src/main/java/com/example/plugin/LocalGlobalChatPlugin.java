@@ -1,6 +1,7 @@
 package com.example.plugin;
 
 import com.hypixel.hytale.server.core.Message;
+import com.hypixel.hytale.server.core.command.system.CommandContext;
 import com.hypixel.hytale.server.core.event.events.player.PlayerChatEvent;
 import com.hypixel.hytale.server.core.plugin.JavaPlugin;
 import com.hypixel.hytale.server.core.plugin.JavaPluginInit;
@@ -12,11 +13,9 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Properties;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 public class LocalGlobalChatPlugin extends JavaPlugin {
@@ -26,6 +25,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     // =========================
     private static final String CONFIG_FILE_NAME = "localglobalchat.properties";
     private static final String PROP_LOCAL_RADIUS = "localRadius";
+    private static final String PROP_CHAT_ADMINS = "chatAdmins"; // csv de UUIDs
 
     // =========================
     // Raio configurável do chat local (default: 50 blocos)
@@ -44,14 +44,28 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     // debug por jogador (toggle /chatdebug)
     private final Map<UUID, Boolean> debugModes = new ConcurrentHashMap<>();
 
+    // =========================
+    // Chat Disable (global)
+    // =========================
+    public static final String PERM_CHAT_DISABLE = "localglobalchat.chatdisable";
+    public static final String PERM_CHAT_BYPASS  = "localglobalchat.chatdisable.bypass";
+
+    // Admin list (bypass confiável via disco)
+    public static final String PERM_CHAT_ADMIN   = "localglobalchat.chatadmin";
+
+    private final AtomicBoolean chatDisabled = new AtomicBoolean(false);
+
+    // ChatAdmins persistidos em disco (bypass e perm de admin do plugin)
+    private final Set<UUID> chatAdmins = ConcurrentHashMap.newKeySet();
+
     public LocalGlobalChatPlugin(JavaPluginInit init) {
         super(init);
     }
 
     @Override
     protected void setup() {
-        //  carrega o raio salvo antes de registrar comandos e antes do chat rodar
-        loadLocalRadiusFromDisk();
+        // carrega config (localRadius + chatAdmins) antes de registrar comandos e antes do chat rodar
+        loadConfigFromDisk();
 
         getCommandRegistry().registerCommand(new GCommand(this));
         getCommandRegistry().registerCommand(new LCommand(this));
@@ -59,6 +73,11 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
         getCommandRegistry().registerCommand(new ChatDebugCommand(this));
         getCommandRegistry().registerCommand(new LocalRadiusCommand(this));
         getCommandRegistry().registerCommand(new ClearChatCommand());
+        getCommandRegistry().registerCommand(new ChatDisableCommand(this));
+
+        // >>> IMPORTANTE: registre SOMENTE o comando raiz (collection) /chatadmin
+        // (não registre ChatAdminAddCommand/Remove/List direto no registry)
+        getCommandRegistry().registerCommand(new ChatAdminCommand(this));
 
         // Registro do chat via reflection
         registerEventListener(PlayerChatEvent.class, ev -> onChat((PlayerChatEvent) ev));
@@ -68,7 +87,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     }
 
     // =========================================================
-    // API usada pelos comandos
+    // API usada pelos comandos (modo/debug/radius)
     // =========================================================
 
     ChatMode getMode(UUID uuid) {
@@ -90,11 +109,81 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     // persiste no disco
     void setLocalRadius(int blocks) {
         applyLocalRadius(blocks);
-        saveLocalRadiusToDisk();
+        saveConfigToDisk();
     }
 
     int getLocalRadiusInt() {
         return (int) Math.round(localRadius);
+    }
+
+    // =========================================================
+    // CHATADMINS API (usado por /chatadmin add/remove/list)
+    // =========================================================
+
+    public boolean canUseChatAdmin(CommandContext context) {
+        Object sender = extractSender(context);
+
+        // Console sempre pode
+        if (sender == null || !(sender instanceof PlayerRef)) return true;
+
+        PlayerRef p = (PlayerRef) sender;
+        UUID uuid = safeUuid(p);
+        if (uuid != null && isChatAdmin(uuid)) return true;
+
+        // tenta permissões (se o provider expuser)
+        if (LGChatCompat.hasPermissionCompat(sender, PERM_CHAT_ADMIN)) return true;
+        if (LGChatCompat.hasPermissionCompat(sender, PERM_CHAT_DISABLE)) return true;
+
+        // tenta op/admin via reflection
+        return isAdminLevelCompat(p) || isUniverseOpCompat(p);
+    }
+
+    public UUID resolvePlayerOrUuid(String token) {
+        if (token == null) return null;
+        String t = token.trim();
+        if (t.isEmpty()) return null;
+
+        // UUID direto
+        try {
+            return UUID.fromString(t);
+        } catch (Throwable ignored) { }
+
+        // Username online
+        PlayerRef pr = findOnlinePlayerByUsername(t);
+        if (pr != null) return safeUuid(pr);
+
+        return null;
+    }
+
+    public String resolveOnlineName(UUID uuid) {
+        if (uuid == null) return null;
+        PlayerRef pr = findOnlinePlayerByUuid(uuid);
+        try {
+            return pr != null ? pr.getUsername() : null;
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    public boolean addChatAdmin(UUID uuid) {
+        if (uuid == null) return false;
+        boolean added = chatAdmins.add(uuid);
+        if (added) saveConfigToDisk();
+        return added;
+    }
+
+    public boolean removeChatAdmin(UUID uuid) {
+        if (uuid == null) return false;
+        boolean removed = chatAdmins.remove(uuid);
+        if (removed) saveConfigToDisk();
+        return removed;
+    }
+
+    public Set<UUID> getChatAdminsSnapshot() {
+        return new HashSet<>(chatAdmins);
+    }
+
+    public boolean isChatAdmin(UUID uuid) {
+        return uuid != null && chatAdmins.contains(uuid);
     }
 
     // =========================================================
@@ -110,42 +199,60 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     }
 
     // =========================================================
-    // Persistência em arquivo
+    // Persistência em arquivo (radius + chatAdmins)
     // =========================================================
 
-    private void loadLocalRadiusFromDisk() {
+    private void loadConfigFromDisk() {
         try {
             Path cfg = getConfigPath();
-            if (!Files.exists(cfg)) {
-                // sem config -> mantém default
-                return;
-            }
+            if (!Files.exists(cfg)) return;
 
             Properties p = new Properties();
             try (InputStream in = Files.newInputStream(cfg)) {
                 p.load(in);
             }
 
-            String raw = p.getProperty(PROP_LOCAL_RADIUS);
-            if (raw == null || raw.trim().isEmpty()) return;
+            // localRadius
+            String rawRadius = p.getProperty(PROP_LOCAL_RADIUS);
+            if (rawRadius != null && !rawRadius.trim().isEmpty()) {
+                try {
+                    int blocks = Integer.parseInt(rawRadius.trim());
+                    applyLocalRadius(blocks);
+                    System.out.println("[LocalGlobalChat] localRadius carregado: " + getLocalRadiusInt());
+                } catch (Throwable ignored) {
+                    System.err.println("[LocalGlobalChat] ERRO ao parsear localRadius. Usando default 50.");
+                }
+            }
 
-            int blocks = Integer.parseInt(raw.trim());
-            applyLocalRadius(blocks);
+            // chatAdmins
+            chatAdmins.clear();
+            String rawAdmins = p.getProperty(PROP_CHAT_ADMINS);
+            if (rawAdmins != null && !rawAdmins.trim().isEmpty()) {
+                String[] parts = rawAdmins.split("[,;\\s]+");
+                for (String s : parts) {
+                    if (s == null) continue;
+                    String v = s.trim();
+                    if (v.isEmpty()) continue;
+                    try {
+                        chatAdmins.add(UUID.fromString(v));
+                    } catch (Throwable ignored) { }
+                }
+            }
 
-            System.out.println("[LocalGlobalChat] localRadius carregado: " + getLocalRadiusInt());
+            System.out.println("[LocalGlobalChat] chatAdmins carregados: " + chatAdmins.size());
         } catch (Throwable t) {
-            System.err.println("[LocalGlobalChat] ERRO ao carregar localRadius. Usando default 50.");
+            System.err.println("[LocalGlobalChat] ERRO ao carregar config.");
         }
     }
 
-    private void saveLocalRadiusToDisk() {
+    private void saveConfigToDisk() {
         try {
             Path cfg = getConfigPath();
             Files.createDirectories(cfg.getParent());
 
             Properties p = new Properties();
 
-            // se já existir, preserva outras chaves futuras
+            // preserva outras chaves
             if (Files.exists(cfg)) {
                 try (InputStream in = Files.newInputStream(cfg)) {
                     p.load(in);
@@ -154,13 +261,24 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
 
             p.setProperty(PROP_LOCAL_RADIUS, String.valueOf(getLocalRadiusInt()));
 
+            // salva chatAdmins como CSV
+            if (chatAdmins.isEmpty()) {
+                p.remove(PROP_CHAT_ADMINS);
+            } else {
+                StringBuilder sb = new StringBuilder();
+                for (UUID u : chatAdmins) {
+                    if (u == null) continue;
+                    if (sb.length() > 0) sb.append(",");
+                    sb.append(u);
+                }
+                p.setProperty(PROP_CHAT_ADMINS, sb.toString());
+            }
+
             try (OutputStream out = Files.newOutputStream(cfg)) {
                 p.store(out, "LocalGlobalChat config");
             }
-
-            System.out.println("[LocalGlobalChat] localRadius salvo: " + getLocalRadiusInt());
         } catch (Throwable t) {
-            System.err.println("[LocalGlobalChat] ERRO ao salvar localRadius (sem permissao de escrita?).");
+            System.err.println("[LocalGlobalChat] ERRO ao salvar config (sem permissao de escrita?).");
         }
     }
 
@@ -173,7 +291,6 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
      * Se não achar, usa: ./plugins/LocalGlobalChat/
      */
     private Path getDataDirSafe() {
-        // tenta métodos comuns no JavaPlugin (dependendo do build)
         Object r = invokeAny(this,
                 "getDataFolder",
                 "getDataDirectory",
@@ -185,7 +302,6 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
         if (r instanceof java.io.File f) return f.toPath();
         if (r instanceof String s && !s.trim().isEmpty()) return Paths.get(s.trim());
 
-        // fallback bem seguro
         return Paths.get("plugins", "LocalGlobalChat");
     }
 
@@ -289,9 +405,8 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
 
                 Consumer<Object> handler = ev -> {
                     PlayerRef p = extractPlayerRef(ev);
-                    if (p != null && p.getUuid() != null) {
-                        setMode(p.getUuid(), ChatMode.LOCAL);
-                    }
+                    UUID u = safeUuid(p);
+                    if (u != null) setMode(u, ChatMode.LOCAL);
                 };
 
                 if (tryRegister(getEventRegistry(), joinEventClass, handler)) {
@@ -317,14 +432,37 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     }
 
     // =========================================================
-    // Chat formatado (cores via TinyMsg se instalado)
+    // Chat
     // =========================================================
 
     private void onChat(PlayerChatEvent event) {
         PlayerRef sender = event.getSender();
-        UUID senderUuid = sender.getUuid();
+        UUID senderUuid = safeUuid(sender);
 
-        ChatMode mode = getMode(senderUuid);
+        boolean disabled = chatDisabled.get();
+        boolean bypass = canBypassChatDisabled(sender);
+
+        // Debug mesmo quando bloqueado
+        if (senderUuid != null && isDebug(senderUuid)) {
+            sender.sendMessage(Message.raw(
+                    "DEBUG blocked=" + (disabled && !bypass) +
+                            " chatDisabled=" + disabled +
+                            " diskAdmin=" + (senderUuid != null && isChatAdmin(senderUuid)) +
+                            " perm.disable=" + LGChatCompat.hasPermissionCompat(sender, PERM_CHAT_DISABLE) +
+                            " perm.bypass=" + LGChatCompat.hasPermissionCompat(sender, PERM_CHAT_BYPASS) +
+                            " op/admin=" + (isAdminLevelCompat(sender) || isUniverseOpCompat(sender))
+            ));
+        }
+
+        // Se chat estiver desativado e o jogador NÃO tiver bypass -> bloqueia
+        if (disabled && !bypass) {
+            try { event.getTargets().clear(); } catch (Throwable ignored) { }
+            cancelEventCompat(event);
+            sender.sendMessage(systemColor("red", "O chat está desativado no momento"));
+            return;
+        }
+
+        ChatMode mode = (senderUuid != null) ? getMode(senderUuid) : ChatMode.LOCAL;
 
         event.setFormatter((ignoredViewer, message) -> formatChat(mode, sender.getUsername(), message));
 
@@ -347,25 +485,154 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
                 return (dx * dx + dy * dy + dz * dz) > localRadiusSq;
             });
         }
+    }
 
-        // DEBUG (somente se estiver ligado)
-        if (isDebug(senderUuid)) {
-            StringBuilder sb = new StringBuilder();
-            sb.append("DEBUG chat=").append(mode == ChatMode.LOCAL ? "LOCAL" : "GLOBAL");
-            sb.append(" targets=").append(event.getTargets().size()).append(" -> ");
-
-            int shown = 0;
-            for (PlayerRef t : event.getTargets()) {
-                if (t == null) continue;
-                sb.append(t.getUsername()).append(", ");
-                shown++;
-                if (shown >= 10) {
-                    sb.append("...");
-                    break;
-                }
-            }
-            sender.sendMessage(Message.raw(sb.toString()));
+    // toggle seguro sem updateAndGet
+    boolean toggleChatDisabled() {
+        while (true) {
+            boolean cur = chatDisabled.get();
+            boolean next = !cur;
+            if (chatDisabled.compareAndSet(cur, next)) return next;
         }
+    }
+
+    private boolean canBypassChatDisabled(PlayerRef p) {
+        UUID u = safeUuid(p);
+
+        // bypass por DISCO (chatAdmins)
+        if (u != null && isChatAdmin(u)) return true;
+
+        // tenta permissões (se provider expuser)
+        if (LGChatCompat.hasPermissionCompat(p, PERM_CHAT_DISABLE, false)) return true;
+        if (LGChatCompat.hasPermissionCompat(p, PERM_CHAT_BYPASS, false)) return true;
+
+        // tenta op/admin via reflection
+        return isAdminLevelCompat(p) || isUniverseOpCompat(p);
+    }
+
+    private boolean isAdminLevelCompat(PlayerRef p) {
+        if (p == null) return false;
+
+        for (String mn : new String[]{"isAdmin", "isOperator", "isOp"}) {
+            try {
+                Method m = p.getClass().getMethod(mn);
+                Object r = m.invoke(p);
+                if (r instanceof Boolean b) return b;
+            } catch (Throwable ignored) { }
+        }
+
+        for (String mn : new String[]{"getPermissionLevel", "getOpLevel", "getOperatorLevel"}) {
+            try {
+                Method m = p.getClass().getMethod(mn);
+                Object r = m.invoke(p);
+                if (r instanceof Number n) return n.intValue() >= 2;
+            } catch (Throwable ignored) { }
+        }
+
+        return false;
+    }
+
+    private boolean isUniverseOpCompat(PlayerRef p) {
+        if (p == null) return false;
+
+        // alguns builds expõem direto no PlayerRef
+        for (String mn : new String[]{"isUniverseOperator", "isUniverseOp", "isOperator"}) {
+            try {
+                Method m = p.getClass().getMethod(mn);
+                Object r = m.invoke(p);
+                if (r instanceof Boolean b) return b;
+            } catch (Throwable ignored) { }
+        }
+
+        // fallback: tenta Universe.get().isOperator(uuid) ou algo similar
+        try {
+            UUID u = safeUuid(p);
+            if (u == null) return false;
+
+            Class<?> uniCl = Class.forName("com.hypixel.hytale.server.core.universe.Universe");
+            Object uni = uniCl.getMethod("get").invoke(null);
+            if (uni == null) return false;
+
+            for (String mn : new String[]{"isOperator", "isOp", "isPlayerOperator", "isUniverseOperator"}) {
+                try {
+                    Method m = uni.getClass().getMethod(mn, UUID.class);
+                    Object r = m.invoke(uni, u);
+                    if (r instanceof Boolean b) return b;
+                } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+
+        return false;
+    }
+
+    void broadcastSystemMessage(Message msg) {
+        broadcastCompat(msg);
+    }
+
+    // Mensagem colorida (TinyMsg se existir; fallback §)
+    static Message systemColor(String tinyColor, String text) {
+        String safe = LGChatCompat.tinySafe(text);
+        String tiny = "<color:" + tinyColor + ">" + safe + "</color>";
+        Message parsed = LGChatCompat.tryTinyMsgParse(tiny);
+        if (parsed != null) return parsed;
+
+        String legacy;
+        if ("red".equalsIgnoreCase(tinyColor)) legacy = "§c";
+        else if ("green".equalsIgnoreCase(tinyColor)) legacy = "§a";
+        else if ("yellow".equalsIgnoreCase(tinyColor)) legacy = "§e";
+        else legacy = "§f";
+
+        return Message.raw(legacy + text + "§r");
+    }
+
+    // Broadcast compatível via reflection (Universe / lista de players)
+    private static void broadcastCompat(Message msg) {
+        try {
+            Class<?> uniCl = Class.forName("com.hypixel.hytale.server.core.universe.Universe");
+            Object uni = uniCl.getMethod("get").invoke(null);
+            if (uni == null) return;
+
+            for (String mn : new String[]{"broadcastMessage", "broadcast", "sendMessageToAll", "broadcastToAll"}) {
+                try {
+                    Method m = uni.getClass().getMethod(mn, Message.class);
+                    m.invoke(uni, msg);
+                    return;
+                } catch (Throwable ignored) { }
+            }
+
+            for (String mn : new String[]{"getPlayers", "players", "getOnlinePlayers", "onlinePlayers"}) {
+                try {
+                    Method m = uni.getClass().getMethod(mn);
+                    Object r = m.invoke(uni);
+                    if (r instanceof Iterable<?> it) {
+                        for (Object o : it) {
+                            if (o instanceof PlayerRef p) {
+                                p.sendMessage(msg);
+                            }
+                        }
+                    }
+                    return;
+                } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    // Cancelar evento via reflection (compat entre builds)
+    private static void cancelEventCompat(Object event) {
+        if (event == null) return;
+
+        for (String mn : new String[]{"setCancelled", "setCanceled", "setCanceledFlag"}) {
+            try {
+                Method m = event.getClass().getMethod(mn, boolean.class);
+                m.invoke(event, true);
+                return;
+            } catch (Throwable ignored) { }
+        }
+
+        try {
+            Method m = event.getClass().getMethod("cancel");
+            m.invoke(event);
+        } catch (Throwable ignored) { }
     }
 
     private static Message formatChat(ChatMode mode, String username, String msg) {
@@ -427,5 +694,74 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
             } catch (Throwable ignored) { }
         }
         return null;
+    }
+
+    // =========================================================
+    // Sender / Players online (compat)
+    // =========================================================
+
+    private static Object extractSender(CommandContext context) {
+        if (context == null) return null;
+        try {
+            Method senderM = context.getClass().getMethod("sender");
+            return senderM.invoke(context);
+        } catch (Throwable ignored) { }
+        try {
+            Method senderM = context.getClass().getMethod("getSender");
+            return senderM.invoke(context);
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    private static UUID safeUuid(PlayerRef p) {
+        try {
+            return p != null ? p.getUuid() : null;
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    private static PlayerRef findOnlinePlayerByUsername(String username) {
+        if (username == null) return null;
+        String u = username.trim();
+        if (u.isEmpty()) return null;
+
+        for (PlayerRef p : getOnlinePlayersCompat()) {
+            try {
+                if (p != null && p.getUsername() != null && p.getUsername().equalsIgnoreCase(u)) return p;
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    private static PlayerRef findOnlinePlayerByUuid(UUID uuid) {
+        if (uuid == null) return null;
+
+        for (PlayerRef p : getOnlinePlayersCompat()) {
+            try {
+                if (p != null && uuid.equals(p.getUuid())) return p;
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    private static List<PlayerRef> getOnlinePlayersCompat() {
+        try {
+            Class<?> uniCl = Class.forName("com.hypixel.hytale.server.core.universe.Universe");
+            Object uni = uniCl.getMethod("get").invoke(null);
+            if (uni == null) return Collections.emptyList();
+
+            for (String mn : new String[]{"getPlayers", "players", "getOnlinePlayers", "onlinePlayers"}) {
+                try {
+                    Method m = uni.getClass().getMethod(mn);
+                    Object r = m.invoke(uni);
+                    if (r instanceof Iterable<?> it) {
+                        List<PlayerRef> out = new ArrayList<>();
+                        for (Object o : it) if (o instanceof PlayerRef pr) out.add(pr);
+                        return out;
+                    }
+                } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+        return Collections.emptyList();
     }
 }
