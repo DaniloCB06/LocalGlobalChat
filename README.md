@@ -17,17 +17,17 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
     
 *   Local chat filtered by **distance radius** (same world)
     
-*   Private messages with `/msg` (message is **fully pink**)
+*   Private messages with `/msg` (message is **fully pink**). Private messages can be disabled via `/chatdisable msg`.
     
 *   Admin command to **clear the chat** (Global + Local)
     
-*   Admin command to **inspect/debug chat variables**
+*   Admin command to **inspect/debug chat variables** (mode, locks, admin/op, warning, ping)
     
 *   Admin-only local radius setting (**persists after restart**)
     
-*   Admin-only **chat lockdown** mode (disable chat for normal players)
+*   Per-channel **chat disable**: `/chatdisable global|local|msg` (alias: `/cdb`)
     
-*   **Chat Admin allowlist**: players can be allowed to talk even while chat is disabled
+*   **Chat Admin allowlist**: chatadmins can talk while chat is disabled and can use `/chatdisable` and `/chatwarning`
     
 *   **Periodic chat-mode warning (per-player)**:
     
@@ -72,19 +72,21 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 ![image](https://media.forgecdn.net/attachments/description/null/description_20b2e4d2-37c8-4bb0-9b8d-c8f1a38ce28d.png)
 
-*   When **chat is disabled** via `/chatdisable` (alias: `/cdb`), only:
+*   When chat is disabled via `/chatdisable global|local|msg` (alias: `/cdb`), only:
     
     *   server admins (ops/admins), and/or
     *   players added with `/chatadmin add ...`
     
-    will be able to send chat messages (Global/Local).
+    will be able to send chat messages for that channel (Global/Local/Msg).
+
+*   `/chatdisable msg` blocks only private messages (`/msg`).
     
-*   **Important security note:** `/chatdisable` (`/cdb`) can only be executed by users who are allowed to use `/chatadmin` (admins/ops). This prevents normal players from toggling chat lockdown on multiplayer servers.
+*   **Important security note:** `/chatdisable` (`/cdb`) can only be executed by chatadmins or admins/ops. This prevents normal players from toggling chat lockdown on multiplayer servers.
     
 *   **Periodic chat warning** (optional):
     
     *   Each player can receive a **private reminder** message every X minutes.
-    *   Admins can change the interval or disable it using `/cw <minutes>`.
+    *   ChatAdmins can change the interval or disable it using `/cw <minutes>` (admins/ops can still see the command).
 
 \]
 
@@ -117,29 +119,33 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 ***
 
-### Admin-only commands
+### Staff commands (Admin/Op or ChatAdmin)
 
 *   `/localradius <number>`
     
+    *   Admin/Op only.
     *   Sets the **Local chat radius** in blocks.
     *   Default is `50`.
     *   This value is **saved/persistent** after restart.
     *   Example: `/localradius 80`
 *   `/clearchat`
     
+    *   Admin/Op only.
     *   Clears the game chat for all online players (**Global + Local**).
     *   Alias: `/cc`
 *   `/chatdebug`
     
     *   Displays **debug information / variables** related to the server chat (useful for verifying current settings/state).
-*   `/chatdisable`
+    *   Alias: `/cdg`
+*   `/chatdisable global|local|msg`
     
-    *   Toggles chat lockdown mode:
-    *   If chat is enabled: disables chat for normal players (only allowed roles/users can talk).
-    *   If chat is disabled: enables chat globally again.
+    *   Toggles chat lockdown per channel (Global, Local, or private messages).
+    *   Usable by Admin/Op or ChatAdmin.
     *   Alias: `/cdb`
+    *   Examples: `/chatdisable global`, `/chatdisable local`, `/chatdisable msg`
 *   `/chatadmin`
     
+    *   Admin/Op only.
     *   Manages the **Chat Admin allowlist** (players who can talk while chat is disabled).
         
     *   Variants:
@@ -162,6 +168,7 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
         
 *   `/chatwarning <minutes>`
     
+    *   Visible to Admin/Op and ChatAdmins, but only ChatAdmins can execute.
     *   Configures the **periodic chat-mode warning** (private reminder).
         
     *   `<minutes>` is the interval in minutes.
@@ -186,9 +193,17 @@ This plugin uses two practical access levels:
 *   **Everyone (permission zero)**:
     
     *   `/g`, `/l`, `/msg`
-*   **Admin level**:
+*   **Admin/Op level**:
     
-    *   `/localradius`, `/clearchat` (`/cc`), `/chatdebug`, `/chatdisable` (`/cdb`), `/chatadmin ...`, `/chatwarning` (`/cw`)
+    *   `/localradius`, `/clearchat` (`/cc`), `/chatdebug` (`/cdg`), `/chatadmin ...`
+    *   Can see `/chatwarning` (`/cw`) in the command list
+*   **ChatAdmin (allowlist)**:
+    
+    *   Can use `/chatdisable` (`/cdb`) and `/chatwarning` (`/cw`)
+    *   Can still talk when chat is disabled
+*   **Admin/Op or ChatAdmin**:
+    
+    *   `/chatdisable` (`/cdb`)
 
 Additionally:
 
