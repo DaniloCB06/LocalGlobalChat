@@ -26,6 +26,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     private static final String CONFIG_FILE_NAME = "localglobalchat.properties";
     private static final String PROP_LOCAL_RADIUS = "localRadius";
     private static final String PROP_CHAT_ADMINS = "chatAdmins"; // CSV of UUIDs
+    private static final String PROP_CHAT_WARNING_MINUTES = "chatWarningMinutes"; // 0 = disabled
 
     // =========================
     // Configurable local chat radius (default: 50 blocks)
@@ -37,6 +38,9 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     private static final String TINY_GLOBAL = "green";
     private static final String TINY_LOCAL = "yellow";
     private static final String TINY_TEXT = "white";
+
+    // Warning colors
+    private static final String TINY_WARN_ORANGE = "orange";
 
     // Chat mode per player
     private final Map<UUID, ChatMode> chatModes = new ConcurrentHashMap<>();
@@ -58,13 +62,24 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     // ChatAdmins persisted on disk (bypass + plugin admin permission)
     private final Set<UUID> chatAdmins = ConcurrentHashMap.newKeySet();
 
+    // =========================
+    // Chat Warning (global setting)
+    // =========================
+    private static final int DEFAULT_WARNING_MINUTES = 1;
+    private static final int MAX_WARNING_MINUTES = 1440; // 24h safety cap
+
+    private volatile int chatWarningMinutes = DEFAULT_WARNING_MINUTES;
+
+    private final Object warningLock = new Object();
+    private Timer warningTimer;
+
     public LocalGlobalChatPlugin(JavaPluginInit init) {
         super(init);
     }
 
     @Override
     protected void setup() {
-        // Load config (localRadius + chatAdmins) before registering commands and before chat runs
+        // Load config (localRadius + chatAdmins + warning) before registering commands and before chat runs
         loadConfigFromDisk();
 
         getCommandRegistry().registerCommand(new GCommand(this));
@@ -75,8 +90,10 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
         getCommandRegistry().registerCommand(new ClearChatCommand());
         getCommandRegistry().registerCommand(new ChatDisableCommand(this));
 
+        // /chatwarning (alias /cw) - admin only
+        getCommandRegistry().registerCommand(new ChatWarningCommand(this));
+
         // >>> IMPORTANT: register ONLY the root (collection) command /chatadmin
-        // (do not register ChatAdminAddCommand/Remove/List directly in the registry)
         getCommandRegistry().registerCommand(new ChatAdminCommand(this));
 
         // Chat event registration via reflection
@@ -84,6 +101,9 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
 
         // (Optional) try to reset to LOCAL when the player joins (if such event exists)
         tryRegisterJoinResetToLocal();
+
+        // Start / reschedule warnings
+        rescheduleChatWarningTimer();
     }
 
     // =========================================================
@@ -115,6 +135,120 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     int getLocalRadiusInt() {
         return (int) Math.round(localRadius);
     }
+
+    // =========================================================
+    // Chat Warning API (used by /chatwarning /cw)
+    // =========================================================
+
+    public int getChatWarningMinutes() {
+        return chatWarningMinutes;
+    }
+
+    public void setChatWarningMinutes(int minutes) {
+        chatWarningMinutes = clampWarningMinutes(minutes);
+        saveConfigToDisk();
+        rescheduleChatWarningTimer();
+    }
+
+    public Message buildChatWarningConfigFeedback(int minutes) {
+        int m = clampWarningMinutes(minutes);
+
+        if (m == 0) {
+            String tiny = "<color:" + TINY_WARN_ORANGE + ">Chat warning has been disabled.</color>";
+            String plain = "Chat warning has been disabled.";
+
+            Message parsed = LGChatCompat.tryTinyMsgParse(tiny);
+            return (parsed != null) ? parsed : Message.raw(plain);
+        }
+
+        String tiny = "<color:" + TINY_WARN_ORANGE + ">Chat warning interval set to " + m + " minute(s).</color>";
+        String plain = "Chat warning interval set to " + m + " minute(s).";
+
+        Message parsed = LGChatCompat.tryTinyMsgParse(tiny);
+        return (parsed != null) ? parsed : Message.raw(plain);
+    }
+
+
+    private static int clampWarningMinutes(int minutes) {
+        if (minutes < 0) return 0;
+        if (minutes > MAX_WARNING_MINUTES) return MAX_WARNING_MINUTES;
+        return minutes;
+    }
+
+    private void rescheduleChatWarningTimer() {
+        synchronized (warningLock) {
+            if (warningTimer != null) {
+                try { warningTimer.cancel(); } catch (Throwable ignored) { }
+                warningTimer = null;
+            }
+
+            int mins = chatWarningMinutes;
+            if (mins <= 0) return;
+
+            long periodMs = mins * 60_000L;
+
+            warningTimer = new Timer("LocalGlobalChat-WarningTimer", true);
+            warningTimer.scheduleAtFixedRate(new TimerTask() {
+                @Override
+                public void run() {
+                    try {
+                        tickChatWarnings();
+                    } catch (Throwable ignored) { }
+                }
+            }, periodMs, periodMs);
+        }
+    }
+
+    private void tickChatWarnings() {
+        List<PlayerRef> players = getOnlinePlayersCompat();
+        if (players.isEmpty()) return;
+
+        for (PlayerRef p : players) {
+            if (p == null) continue;
+
+            UUID u = safeUuid(p);
+            ChatMode mode = (u != null) ? getMode(u) : ChatMode.LOCAL;
+
+            Message warn = buildChatWarningMessage(mode);
+            try { p.sendMessage(warn); } catch (Throwable ignored) { }
+        }
+    }
+
+    private Message buildChatWarningMessage(ChatMode mode) {
+        boolean isGlobal = (mode == ChatMode.GLOBAL);
+
+        String modeText  = isGlobal ? "GLOBAL" : "LOCAL";
+        String modeColor = isGlobal ? "green" : "yellow";
+
+        // ===== Colored (TinyMessage) =====
+        // Everything orange except:
+        // [Warning] red
+        // current mode colored (global=green, local=yellow)
+        // /g + [Switch to global chat] green
+        // /l + [Switch to local chat] yellow
+        String tiny =
+                "<color:#FFA500>"
+                        + "<color:red>[Warning]</color> "
+                        + "You are currently in the "
+                        + "<color:" + modeColor + ">" + LGChatCompat.tinySafe(modeText) + "</color>"
+                        + " <color:#FFA500>chat. Remember you can switch chats at any time using </color>"
+                        + "<color:green>/g</color> "
+                        + "<color:green>[ Switch to global chat ]</color> "
+                        + "<color:#FFA500>and </color>"
+                        + "<color:yellow>/l</color> "
+                        + "<color:yellow>[ Switch to local chat ]</color>"
+                        + "</color>";
+
+        // ===== No-color fallback =====
+        String plain =
+                "[Warning] You are currently in the " + modeText
+                        + " chat. Remember you can switch chats at any time using /g [ Switch to global chat ] and /l [ Switch to local chat ]";
+
+        Message parsed = LGChatCompat.tryTinyMsgParse(tiny);
+        return (parsed != null) ? parsed : Message.raw(plain);
+    }
+
+
 
     // =========================================================
     // CHATADMINS API (used by /chatadmin add/remove/list)
@@ -199,7 +333,7 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
     }
 
     // =========================================================
-    // File persistence (radius + chatAdmins)
+    // File persistence (radius + chatAdmins + warning)
     // =========================================================
 
     private void loadConfigFromDisk() {
@@ -240,6 +374,20 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
             }
 
             System.out.println("[LocalGlobalChat] chatAdmins loaded: " + chatAdmins.size());
+
+            // chatWarningMinutes
+            String rawWarn = p.getProperty(PROP_CHAT_WARNING_MINUTES);
+            if (rawWarn != null && !rawWarn.trim().isEmpty()) {
+                try {
+                    int mins = Integer.parseInt(rawWarn.trim());
+                    chatWarningMinutes = clampWarningMinutes(mins);
+                    System.out.println("[LocalGlobalChat] chatWarningMinutes loaded: " + chatWarningMinutes);
+                } catch (Throwable ignored) {
+                    chatWarningMinutes = DEFAULT_WARNING_MINUTES;
+                    System.err.println("[LocalGlobalChat] ERROR parsing chatWarningMinutes. Using default " + DEFAULT_WARNING_MINUTES + ".");
+                }
+            }
+
         } catch (Throwable t) {
             System.err.println("[LocalGlobalChat] ERROR loading config.");
         }
@@ -273,6 +421,9 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
                 }
                 p.setProperty(PROP_CHAT_ADMINS, sb.toString());
             }
+
+            // Save warning minutes
+            p.setProperty(PROP_CHAT_WARNING_MINUTES, String.valueOf(Math.max(0, chatWarningMinutes)));
 
             try (OutputStream out = Files.newOutputStream(cfg)) {
                 p.store(out, "LocalGlobalChat config");
@@ -577,10 +728,9 @@ public class LocalGlobalChatPlugin extends JavaPlugin {
         Message parsed = LGChatCompat.tryTinyMsgParse(tiny);
         if (parsed != null) return parsed;
 
-        // Sem TinyMessage: NADA de cor, NADA de §r/§c
+        // No TinyMessage: no colors
         return Message.raw(text);
     }
-
 
     // Broadcast compatible via reflection (Universe / player list)
     private static void broadcastCompat(Message msg) {

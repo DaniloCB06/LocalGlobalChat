@@ -1,7 +1,7 @@
 {
   "Group": "com.example",
   "Name": "ChatInteractions",
-  "Version": "1.0.1",
+  "Version": "1.1.0",
   "Main": "com.example.plugin.LocalGlobalChatPlugin",
   "Author": "FoToom",
   "OptionalDependencies": {
