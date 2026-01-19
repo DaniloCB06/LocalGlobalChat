@@ -27,7 +27,7 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
     
 *   Per-channel **chat disable**: `/chatdisable global|local|msg` (alias: `/cdb`)
     
-*   **Chat Admin allowlist**: chatadmins can talk while chat is disabled and can use `/chatdisable` and `/chatwarning`
+*   **Chat Admin allowlist**: only ChatAdmins can talk while chat is disabled; they can also use `/chatdisable` and `/chatwarning` (even without admin/op)
     
 *   **Periodic chat-mode warning (per-player)**:
     
@@ -72,21 +72,16 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 ![image](https://media.forgecdn.net/attachments/description/null/description_20b2e4d2-37c8-4bb0-9b8d-c8f1a38ce28d.png)
 
-*   When chat is disabled via `/chatdisable global|local|msg` (alias: `/cdb`), only:
-    
-    *   server admins (ops/admins), and/or
-    *   players added with `/chatadmin add ...`
-    
-    will be able to send chat messages for that channel (Global/Local/Msg).
+*   When chat is disabled via `/chatdisable global|local|msg` (alias: `/cdb`), only ChatAdmins can send messages for that channel (Global/Local/Msg).
 
 *   `/chatdisable msg` blocks only private messages (`/msg`).
     
-*   **Important security note:** `/chatdisable` (`/cdb`) can only be executed by chatadmins or admins/ops. This prevents normal players from toggling chat lockdown on multiplayer servers.
+*   **Important security note:** `/chatdisable` (`/cdb`) requires Admin/Op (console allowed). ChatAdmins can also execute it without admin/op.
     
 *   **Periodic chat warning** (optional):
     
     *   Each player can receive a **private reminder** message every X minutes.
-    *   ChatAdmins can change the interval or disable it using `/cw <minutes>` (admins/ops can still see the command).
+    *   ChatAdmins can change the interval or disable it using `/cw <minutes>` even without admin/op. Admins/Ops can also execute it.
 
 \]
 
@@ -119,7 +114,9 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 ***
 
-### Staff commands (Admin/Op or ChatAdmin)
+### Staff commands (Admin/Op; console allowed)
+
+All commands below require Admin/Op unless noted. ChatAdmins can also use `/chatdisable` and `/chatwarning` even without admin/op.
 
 *   `/localradius <number>`
     
@@ -145,7 +142,7 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
     *   Examples: `/chatdisable global`, `/chatdisable local`, `/chatdisable msg`
 *   `/chatadmin`
     
-    *   Admin/Op only.
+    *   Admin/Op only (console allowed).
     *   Manages the **Chat Admin allowlist** (players who can talk while chat is disabled).
         
     *   Variants:
@@ -168,7 +165,7 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
         
 *   `/chatwarning <minutes>`
     
-    *   Visible to Admin/Op and ChatAdmins, but only ChatAdmins can execute.
+    *   Executable by Admin/Op and ChatAdmins (chatadmins do not need admin/op).
     *   Configures the **periodic chat-mode warning** (private reminder).
         
     *   `<minutes>` is the interval in minutes.
@@ -188,27 +185,22 @@ Chat plugin for Hytale featuring **Global/Local chat**, **private messaging**, *
 
 ## Permissions / Access
 
-This plugin uses two practical access levels:
+This plugin uses these access levels:
 
 *   **Everyone (permission zero)**:
     
     *   `/g`, `/l`, `/msg`
-*   **Admin/Op level**:
+*   **Admin/Op (and console)**:
     
-    *   `/localradius`, `/clearchat` (`/cc`), `/chatdebug` (`/cdg`), `/chatadmin ...`
-    *   Can see `/chatwarning` (`/cw`) in the command list
+    *   Required for all other commands
 *   **ChatAdmin (allowlist)**:
     
-    *   Can use `/chatdisable` (`/cdb`) and `/chatwarning` (`/cw`)
-    *   Can still talk when chat is disabled
-*   **Admin/Op or ChatAdmin**:
-    
-    *   `/chatdisable` (`/cdb`)
+    *   Can use `/chatdisable` (`/cdb`) and `/chatwarning` (`/cw`) even without admin/op
+    *   Only ChatAdmins can talk when chat is disabled
 
 Additionally:
 
-*   **Chat Admin (allowlist)** is managed by admins via `/chatadmin add/remove/list`.
-*   Chat Admins are the players who can **still talk when chat is disabled**.
+*   **Chat Admin (allowlist)** is managed via `/chatadmin add/remove/list`.
 
 ***
 
